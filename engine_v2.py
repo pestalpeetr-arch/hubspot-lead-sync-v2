@@ -444,11 +444,19 @@ def run_sync_v2(companies: dict, hs: HubSpotV2,
                 stats["co_updated"] += 1
                 log(f"   = company found & updated")
                 record(company_name, "", "", "Company Updated", stage)
-        except requests.HTTPError as e:
-            code = e.response.status_code if e.response else "?"
-            log(f"   ! company error HTTP {code}")
+        except Exception as e:
+            if isinstance(e, requests.HTTPError) and e.response is not None:
+                code = e.response.status_code
+                try:
+                    body = e.response.json().get("message", e.response.text[:120])
+                except Exception:
+                    body = e.response.text[:120]
+                detail = f"HTTP {code}: {body}"
+            else:
+                detail = f"{type(e).__name__}: {e}"
+            log(f"   ! company error  {detail}")
             stats["errors"] += 1
-            record(company_name, "", "", "Error", stage, f"Company HTTP {code}")
+            record(company_name, "", "", "Error", stage, f"Company {detail}")
             continue
 
         # Contacts
@@ -472,11 +480,19 @@ def run_sync_v2(companies: dict, hs: HubSpotV2,
                 record(company_name, name_str, c["email"], label, stage)
                 ct_ids.append(ct_id)
                 hs.link_contact_company(ct_id, co_id)
-            except requests.HTTPError as e:
-                code = e.response.status_code if e.response else "?"
-                log(f"   ! contact error {c['email']}  HTTP {code}")
+            except Exception as e:
+                if isinstance(e, requests.HTTPError) and e.response is not None:
+                    code = e.response.status_code
+                    try:
+                        body = e.response.json().get("message", e.response.text[:120])
+                    except Exception:
+                        body = e.response.text[:120]
+                    detail = f"HTTP {code}: {body}"
+                else:
+                    detail = f"{type(e).__name__}: {e}"
+                log(f"   ! contact error {c['email']}  {detail}")
                 stats["errors"] += 1
-                record(company_name, name_str, c["email"], "Error", stage, f"HTTP {code}")
+                record(company_name, name_str, c["email"], "Error", stage, detail)
 
         # Deal
         try:
