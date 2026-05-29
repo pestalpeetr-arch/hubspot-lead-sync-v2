@@ -423,7 +423,10 @@ def run_sync_v2(companies: dict, hs: HubSpotV2,
                 stats["skipped"] += 1
                 record(company_name, "", "", "Skipped", None, "No activity")
                 continue
-            stage = fallback_stage  # import-all mode: use the default stage
+            stage_id = fallback_stage  # already a HubSpot stage ID
+            stage    = "imported"      # label for logs only
+        else:
+            stage_id = stage_map[stage]
 
         log(f"▸  {company_name}  →  {stage.upper()}")
 
@@ -476,7 +479,6 @@ def run_sync_v2(companies: dict, hs: HubSpotV2,
                 record(company_name, name_str, c["email"], "Error", stage, f"HTTP {code}")
 
         # Deal
-        stage_id = stage_map[stage]
         try:
             existing = hs.get_company_deals(co_id)
         except Exception:
