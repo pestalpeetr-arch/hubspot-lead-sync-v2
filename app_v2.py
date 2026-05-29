@@ -309,6 +309,28 @@ if st.session_state.hs and st.session_state.pipelines:
         with col3:
             s_m = st.selectbox("📅 Meeting scheduled →", stage_labels, key="sm")
 
+        st.divider()
+        st.write("**Sync mode**")
+        sync_mode = st.radio(
+            "Which companies should be synced?",
+            [
+                "🔄  Active only — companies where Contacted / Responded / Meeting = TRUE",
+                "📥  Import all — every company, even those with no activity yet",
+            ],
+            key="sync_mode",
+            help="Use 'Active only' for ongoing pipeline updates. Use 'Import all' when setting up HubSpot from scratch.",
+        )
+
+        fallback_stage_id = None
+        if "Import all" in sync_mode:
+            st.caption("Companies with no activity will be placed in this stage:")
+            s_fallback = st.selectbox(
+                "📌 Default stage (no activity) →",
+                stage_labels,
+                key="s_fallback",
+            )
+            fallback_stage_id = stage_by_label[s_fallback]
+
         st.session_state.config = {
             "pipeline_id": chosen_id,
             "stage_map": {
@@ -316,6 +338,8 @@ if st.session_state.hs and st.session_state.pipelines:
                 "responded": stage_by_label[s_r],
                 "meeting":   stage_by_label[s_m],
             },
+            "fallback_stage": fallback_stage_id,
+            "import_all":     fallback_stage_id is not None,
         }
 
 # ─── STEP 5 · Sync ───────────────────────────────────────────────────────────
@@ -323,12 +347,20 @@ if st.session_state.hs and st.session_state.pipelines:
 if st.session_state.config:
     total, active, _ = count_active(st.session_state.companies)
 
+    import_all = st.session_state.config.get("import_all", False)
+
     st.divider()
     st.subheader("Step 5 — Run Sync")
-    st.caption(
-        f"Will sync **{active} active companies** with all their contacts, "
-        f"phone numbers, LinkedIn profiles, job titles, websites and deals."
-    )
+    if import_all:
+        st.caption(
+            f"📥 **Import all mode** — will sync all **{total} companies** "
+            f"with their contacts, phone numbers, LinkedIn profiles, job titles, websites and deals."
+        )
+    else:
+        st.caption(
+            f"🔄 **Active only mode** — will sync **{active} active companies** "
+            f"(companies with no activity are skipped)."
+        )
 
     if st.button("▶  Start Sync", use_container_width=True, type="primary"):
         st.session_state.sync_stats = None
@@ -340,10 +372,13 @@ if st.session_state.config:
         processed       = [0]
         log_lines       = []
 
-        total_active = sum(
-            1 for c in st.session_state.companies.values()
-            if determine_stage(c) is not None
-        )
+        if import_all:
+            total_active = total  # all companies will be processed
+        else:
+            total_active = sum(
+                1 for c in st.session_state.companies.values()
+                if determine_stage(c) is not None
+            )
 
         def log_cb(msg: str):
             log_lines.append(msg)
@@ -357,11 +392,12 @@ if st.session_state.config:
 
         try:
             stats, log_rows = run_sync_v2(
-                companies   = st.session_state.companies,
-                hs          = st.session_state.hs,
-                pipeline_id = st.session_state.config["pipeline_id"],
-                stage_map   = st.session_state.config["stage_map"],
-                log         = log_cb,
+                companies      = st.session_state.companies,
+                hs             = st.session_state.hs,
+                pipeline_id    = st.session_state.config["pipeline_id"],
+                stage_map      = st.session_state.config["stage_map"],
+                log            = log_cb,
+                fallback_stage = st.session_state.config.get("fallback_stage"),
             )
             progress_bar.progress(1.0, text="Done!")
             st.session_state.sync_stats = stats

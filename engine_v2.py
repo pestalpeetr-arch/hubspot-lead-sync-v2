@@ -392,7 +392,8 @@ class HubSpotV2:
 
 def run_sync_v2(companies: dict, hs: HubSpotV2,
                 pipeline_id: str, stage_map: dict,
-                log: Callable = print) -> tuple:
+                log: Callable = print,
+                fallback_stage: Optional[str] = None) -> tuple:
     """
     Returns (stats_dict, log_rows) where log_rows is a list of dicts
     for the downloadable CSV log.
@@ -418,9 +419,11 @@ def run_sync_v2(companies: dict, hs: HubSpotV2,
     for company_name, contacts in companies.items():
         stage = determine_stage(contacts)
         if stage is None:
-            stats["skipped"] += 1
-            record(company_name, "", "", "Skipped", None, "No activity")
-            continue
+            if fallback_stage is None:
+                stats["skipped"] += 1
+                record(company_name, "", "", "Skipped", None, "No activity")
+                continue
+            stage = fallback_stage  # import-all mode: use the default stage
 
         log(f"▸  {company_name}  →  {stage.upper()}")
 
