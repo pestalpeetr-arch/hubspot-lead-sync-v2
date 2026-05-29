@@ -325,12 +325,29 @@ class HubSpotV2:
         res = data.get("results", [])
         return res[0]["id"] if res else None
 
+    def find_contact_by_name(self, firstname: str, lastname: str) -> Optional[str]:
+        """Best-effort dedup for contacts without email — match on first + last name."""
+        filters = []
+        if firstname:
+            filters.append({"propertyName": "firstname", "operator": "EQ", "value": firstname})
+        if lastname:
+            filters.append({"propertyName": "lastname",  "operator": "EQ", "value": lastname})
+        if not filters:
+            return None
+        data = self._post("/crm/v3/objects/contacts/search", {
+            "filterGroups": [{"filters": filters}],
+            "properties": ["firstname", "lastname"], "limit": 1,
+        })
+        res = data.get("results", [])
+        return res[0]["id"] if res else None
+
     def create_contact(self, contact: dict) -> str:
         props = {
-            "email":     contact["email"],
             "firstname": contact["firstname"],
             "lastname":  contact["lastname"],
         }
+        if contact.get("email"):
+            props["email"] = contact["email"]
         for key in ("jobtitle", "phone", "hs_linkedin_profile_url"):
             src = "linkedin" if key == "hs_linkedin_profile_url" else key
             if contact.get(src):
@@ -349,9 +366,19 @@ class HubSpotV2:
             self._patch(f"/crm/v3/objects/contacts/{cid}", {"properties": props})
 
     def get_or_create_contact(self, contact: dict) -> tuple:
-        if not contact.get("email"):
-            return None, None
-        cid = self.find_contact(contact["email"])
+        if contact.get("email"):
+            # Primary dedup: by email
+            cid = self.find_contact(contact["email"])
+            if cid:
+                self.update_contact(cid, contact)
+                return cid, False
+            return self.create_contact(contact), True
+        # No email — fallback dedup by name, then create without email
+        firstname = contact.get("firstname", "")
+        lastname  = contact.get("lastname", "")
+        if not firstname and not lastname:
+            return None, None  # nothing to work with, skip
+        cid = self.find_contact_by_name(firstname, lastname)
         if cid:
             self.update_contact(cid, contact)
             return cid, False
@@ -463,20 +490,19 @@ def run_sync_v2(companies: dict, hs: HubSpotV2,
         ct_ids = []
         for c in contacts:
             name_str = f"{c['firstname']} {c['lastname']}".strip()
-            if not c["email"]:
-                log(f"   – {name_str}  (no email, skipped)")
-                continue
+            email_display = f"<{c['email']}>" if c.get("email") else "(no email)"
             try:
                 ct_id, created = hs.get_or_create_contact(c)
                 if ct_id is None:
+                    log(f"   – {name_str}  (no name or email, skipped)")
                     continue
                 label = "Contact Created" if created else "Contact Updated"
                 if created:
                     stats["ct_created"] += 1
-                    log(f"   + contact {name_str} <{c['email']}>")
+                    log(f"   + contact {name_str} {email_display}")
                 else:
                     stats["ct_updated"] += 1
-                    log(f"   = contact {name_str} <{c['email']}> updated")
+                    log(f"   = contact {name_str} {email_display} updated")
                 record(company_name, name_str, c["email"], label, stage)
                 ct_ids.append(ct_id)
                 hs.link_contact_company(ct_id, co_id)
