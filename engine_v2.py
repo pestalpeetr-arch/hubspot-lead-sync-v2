@@ -245,6 +245,8 @@ class HubSpotV2:
             "Content-Type": "application/json",
         })
         self._last = 0.0
+        # Properties this portal doesn't support — discovered at runtime from 400 errors
+        self._unsupported_props: set = set()
 
     def _wait(self):
         gap = time.time() - self._last
@@ -274,6 +276,61 @@ class HubSpotV2:
         self._wait()
         r = self.session.put(f"{BASE_URL}{path}")
         r.raise_for_status()
+
+    @staticmethod
+    def _bad_props_from_400(response) -> set:
+        """Parse PROPERTY_DOESNT_EXIST names out of a HubSpot 400 response."""
+        import json as _json
+        bad = set()
+        try:
+            body = response.json()
+            # Format 1: validationResults array
+            for item in body.get("validationResults", []):
+                if item.get("error") == "PROPERTY_DOESNT_EXIST":
+                    bad.add(item["name"])
+            # Format 2: error list embedded in the message string
+            if not bad:
+                msg = body.get("message", "")
+                bracket = msg.find("[")
+                if bracket >= 0:
+                    for item in _json.loads(msg[bracket:]):
+                        if item.get("error") == "PROPERTY_DOESNT_EXIST":
+                            bad.add(item["name"])
+        except Exception:
+            pass
+        return bad
+
+    def _post_with_retry(self, path: str, props: dict) -> dict:
+        """POST object properties; auto-strips unsupported props and retries once."""
+        clean = {k: v for k, v in props.items() if k not in self._unsupported_props}
+        try:
+            return self._post(path, {"properties": clean})
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 400:
+                bad = self._bad_props_from_400(e.response)
+                if bad:
+                    self._unsupported_props.update(bad)
+                    clean = {k: v for k, v in clean.items() if k not in bad}
+                    return self._post(path, {"properties": clean})
+            raise
+
+    def _patch_with_retry(self, path: str, props: dict):
+        """PATCH object properties; auto-strips unsupported props and retries once."""
+        clean = {k: v for k, v in props.items() if k not in self._unsupported_props}
+        if not clean:
+            return
+        try:
+            self._patch(path, {"properties": clean})
+        except requests.HTTPError as e:
+            if e.response is not None and e.response.status_code == 400:
+                bad = self._bad_props_from_400(e.response)
+                if bad:
+                    self._unsupported_props.update(bad)
+                    clean = {k: v for k, v in clean.items() if k not in bad}
+                    if clean:
+                        self._patch(path, {"properties": clean})
+                    return
+            raise
 
     def get_pipelines(self):
         return self._get("/crm/v3/pipelines/deals").get("results", [])
@@ -352,7 +409,7 @@ class HubSpotV2:
             src = "linkedin" if key == "hs_linkedin_profile_url" else key
             if contact.get(src):
                 props[key] = contact[src]
-        return self._post("/crm/v3/objects/contacts", {"properties": props})["id"]
+        return self._post_with_retry("/crm/v3/objects/contacts", props)["id"]
 
     def update_contact(self, cid: str, contact: dict):
         """Update existing contact with any new non-empty properties."""
@@ -362,8 +419,7 @@ class HubSpotV2:
         for key in ("jobtitle", "phone"):
             if contact.get(key): props[key] = contact[key]
         if contact.get("linkedin"): props["hs_linkedin_profile_url"] = contact["linkedin"]
-        if props:
-            self._patch(f"/crm/v3/objects/contacts/{cid}", {"properties": props})
+        self._patch_with_retry(f"/crm/v3/objects/contacts/{cid}", props)
 
     def get_or_create_contact(self, contact: dict) -> tuple:
         if contact.get("email"):
